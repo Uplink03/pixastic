@@ -11,8 +11,6 @@
  
  var Pixastic = (function() {
 
-    var worker;
-
     function createImageData(ctx, width, height) {
         if (ctx.createImageData) {
             return ctx.createImageData(width, height);
@@ -29,21 +27,35 @@
             queue = [],
             workerControlPath = workerControlPath || "";
 
-        if (!worker) {
-            if (typeof window.Worker != "undefined") {
-                try {
-                    worker = new window.Worker(workerControlPath + "pixastic.worker.control.js");
-                } catch(e) {
-                    if (location.protocol == "file:") {
-                        Pixastic.log("Could not create native worker, running from file://")
-                    } else {
-                        Pixastic.log("Could not create native worker.")
+        var worker;
+
+        var startWorker = function() {
+            if (!worker) {
+                if (typeof window.Worker != "undefined") {
+                    try {
+                        worker = new window.Worker(workerControlPath + "pixastic.worker.control.js");
+                    } catch(e) {
+                        if (location.protocol == "file:") {
+                            Pixastic.log("Could not create native worker, running from file://")
+                        } else {
+                            Pixastic.log("Could not create native worker.")
+                        }
                     }
                 }
+                if (!worker) {
+                    worker = new Pixastic.Worker();
+                    worker.terminate = function() {};
+                }
             }
-            if (!worker) {
-                worker = new Pixastic.Worker();
+
+            return worker;
+        }
+
+        var stopWorker = function() {
+            if (worker) {
+                worker.terminate();
             }
+            worker = undefined;
         }
             
         for (var e in Pixastic.Effects) {
@@ -56,57 +68,61 @@
                         });
                         return P;
                     }
-
-                    P.done = function(callback, progress) {
-                        var inData, outData;
-                        
-                        try {
-                            inData = ctx.getImageData(0, 0, width, height);
-                        } catch(e) {
-                            if (location.protocol == "file:") {
-                                throw new Error("Could not access image data, running from file://");
-                            } else {
-                                throw new Error("Could not access image data, is canvas tainted by cross-origin data?");
-                            }
-                        }
-                        
-                        outData = createImageData(ctx, width, height);
-                            
-                        worker.postMessage({
-                            queue : queue, 
-                            inData : inData, 
-                            outData : outData,
-                            width : width,
-                            height : height
-                        });
-                        
-                        worker.onmessage = function(message) {
-                            var d = message.data;
-                            switch (d.event) {
-                                case "done" : 
-                                    ctx.putImageData(d.data, 0, 0);
-                                    if (callback) {
-                                        callback();
-                                    }
-                                    if (progress) {
-                                        progress(1);
-                                    }
-                                    break;
-                                case "progress" :
-                                    if (progress) {
-                                        progress(d.data);
-                                    }
-                                    break;
-                                case "error" :
-                                    break;
-                            }
-                        }
-                        
-                        if (progress) {
-                            progress(0);
-                        }
-                    }
                 })(e);
+            }
+        }
+
+        P.done = function(callback, progress) {
+            var inData, outData;
+            
+            try {
+                inData = ctx.getImageData(0, 0, width, height);
+            } catch(e) {
+                if (location.protocol == "file:") {
+                    throw new Error("Could not access image data, running from file://");
+                } else {
+                    throw new Error("Could not access image data, is canvas tainted by cross-origin data?");
+                }
+            }
+            
+            outData = createImageData(ctx, width, height);
+
+            startWorker();
+                
+            worker.postMessage({
+                queue : queue, 
+                inData : inData, 
+                outData : outData,
+                width : width,
+                height : height
+            });
+            
+            worker.onmessage = function(message) {
+                var d = message.data;
+                switch (d.event) {
+                    case "done" : 
+                        ctx.putImageData(d.data, 0, 0);
+                        if (callback) {
+                            callback();
+                        }
+                        if (progress) {
+                            progress(1);
+                        }
+                        stopWorker();
+                        break;
+                    case "progress" :
+                        if (progress) {
+                            progress(d.data);
+                        }
+                        break;
+                    case "error" :
+                        stopWorker();
+                        break;
+                }
+            }
+            
+            if (progress) {
+                progress(0);
             }
         }
         return P;
